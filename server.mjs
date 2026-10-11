@@ -1,10 +1,9 @@
 import { createServer } from 'node:http'
-import { readFile, stat } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import { resolve, extname, sep } from 'node:path'
+import { resolve, extname, join, sep } from 'node:path'
 import { loadEnvFile } from 'node:process'
-import { Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
 
 const directory = fileURLToPath(new URL('.', import.meta.url))
 try { loadEnvFile(resolve(directory, '.env')) } catch (error) { if (error.code !== 'ENOENT') throw error }
@@ -13,9 +12,42 @@ const port = Number(process.env.PORT || (dev ? 5173 : 3000))
 const endpoint = process.env.IMAGE_API_ENDPOINT || process.env.VITE_IMAGE_API_ENDPOINT || ''
 const editEndpoint = process.env.IMAGE_EDIT_ENDPOINT || endpoint.replace(/\/generations\/?$/, '/edits')
 const dist = resolve(directory, 'dist')
+const dataRoot = resolve(directory, process.env.IMAGE_DATA_DIR || 'data')
 let vite = null
 const json = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)) }
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' }
+const supportedFormats = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif'])
+function safeExtension(value) {
+  const normalized = String(value || 'png').toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!supportedFormats.has(normalized)) return 'bin'
+  return normalized === 'jpeg' ? 'jpg' : normalized
+}
+async function persistImageResponse(body, requestPath) {
+  const payload = JSON.parse(body.toString('utf8'))
+  if (!Array.isArray(payload?.data) || !payload.data.length) return 0
+  const batchDirectory = join(dataRoot, 'images', `${Date.now()}-${randomUUID()}`)
+  const assets = []
+  for (const [index, item] of payload.data.entries()) {
+    let bytes
+    let extension = safeExtension(item?.output_format || item?.format || 'png')
+    if (typeof item?.b64_json === 'string' && item.b64_json) {
+      bytes = Buffer.from(item.b64_json, 'base64')
+    } else if (typeof item?.url === 'string' && /^https?:\/\//i.test(item.url)) {
+      const response = await fetch(item.url, { redirect: 'error', signal: AbortSignal.timeout(60_000) })
+      if (!response.ok) throw new Error(`asset download failed (${response.status})`)
+      bytes = Buffer.from(await response.arrayBuffer())
+      extension = safeExtension(response.headers.get('content-type')?.split(';', 1)[0]?.split('/', 2)[1] || extension)
+    }
+    if (!bytes?.length) continue
+    const filename = `image-${String(index + 1).padStart(2, '0')}.${extension}`
+    await mkdir(batchDirectory, { recursive: true })
+    await writeFile(join(batchDirectory, filename), bytes, { flag: 'wx' })
+    assets.push({ filename, bytes: bytes.byteLength, format: extension })
+  }
+  if (!assets.length) return 0
+  await writeFile(join(batchDirectory, 'manifest.json'), `${JSON.stringify({ created_at: new Date().toISOString(), request_path: requestPath, assets }, null, 2)}\n`)
+  return assets.length
+}
 const server = createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer')
   res.setHeader('X-Content-Type-Options', 'nosniff')
@@ -35,9 +67,17 @@ const server = createServer(async (req, res) => {
         headers: { Authorization: req.headers.authorization, 'Content-Type': req.headers['content-type'] || 'application/json' },
         body: Buffer.concat(chunks), signal: AbortSignal.timeout(590_000),
       })
+      const responseBody = Buffer.from(await upstream.arrayBuffer())
+      if (upstream.ok) {
+        try {
+          const saved = await persistImageResponse(responseBody, path)
+          if (saved) console.log(`Persisted ${saved} generated image(s) under ${dataRoot}`)
+        } catch (error) {
+          console.warn(`Unable to persist generated image(s) under ${dataRoot}: ${error.message}`)
+        }
+      }
       res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json', 'Cache-Control': 'no-store' })
-      if (upstream.body) await pipeline(Readable.fromWeb(upstream.body), res)
-      else res.end()
+      res.end(responseBody)
       return
     }
     if (path.startsWith('/api/')) return json(res, 404, { error: { message: 'Not found' } })

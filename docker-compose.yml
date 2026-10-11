@@ -1,0 +1,24 @@
+services:
+  image-studio:
+    image: ghcr.io/meowapi/image-studio:latest
+    container_name: image-studio
+    restart: unless-stopped
+    ports:
+      - "${IMAGE_STUDIO_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      IMAGE_API_ENDPOINT: ${IMAGE_API_ENDPOINT:?IMAGE_API_ENDPOINT is required}
+      IMAGE_EDIT_ENDPOINT: ${IMAGE_EDIT_ENDPOINT:-}
+      IMAGE_DATA_DIR: /data
+      SITE_NAME: ${SITE_NAME:-Image Studio}
+      SITE_LOGO: ${SITE_LOGO:-}
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
