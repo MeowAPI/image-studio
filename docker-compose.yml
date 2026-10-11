@@ -4,7 +4,7 @@ services:
     container_name: image-studio
     restart: unless-stopped
     ports:
-      - "${IMAGE_STUDIO_PORT:-3000}:3000"
+      - "127.0.0.1:${IMAGE_STUDIO_PORT:-3000}:3000"
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
