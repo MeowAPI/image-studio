@@ -377,6 +377,14 @@
       "settlementHint": "消费结算后自动更新，也可手动刷新。模型次数、速率等限制仍单独生效。",
       "imagePrice": "{{price}} / 张 · 仅成功出图扣费"
     },
+    "historyWarning": {
+      "badge": "重要提醒",
+      "title": "历史记录跟随 API Key",
+      "keyNotice": "历史记录、作品图库与提示词模板都跟随当前 API Key。如果更换 API Key，旧 Key 下的历史记录将无法显示，等同于丢失。",
+      "saveNotice": "请及时保存重要的工作台生图内容并下载留存。如果发生历史记录丢失，我们不保证一定能够找回。",
+      "dismiss": "暂时隐藏",
+      "dismissHint": "关闭后仍可在「登录 API Key」对话框中随时查看此提醒；登录或更换 API Key 时会再次提示。"
+    },
     "loginTitle": "生图门户登录",
     "loginSubtitle": "粘贴 Kurumi AI 的 API Key，即可使用文生图与图生图。",
     "rememberKey": "记住此密钥",

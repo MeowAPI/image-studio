@@ -24,11 +24,28 @@ export function clearStoredAPIKey() {
   temporaryKey = ''
   try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('image_atelier_api_key') } catch { /* unavailable */ }
 }
+// The history warning is re-shown whenever the API key changes, because that is
+// the moment history created under the previous key becomes unreachable.
+export const HISTORY_WARNING_DISMISSED_KEY = 'codex2api_image_studio_history_warning_dismissed'
+export function readHistoryWarningDismissed(): boolean {
+  try { return localStorage.getItem(HISTORY_WARNING_DISMISSED_KEY) === '1' } catch { return false }
+}
+export function writeHistoryWarningDismissed(dismissed: boolean) {
+  try {
+    if (dismissed) localStorage.setItem(HISTORY_WARNING_DISMISSED_KEY, '1')
+    else localStorage.removeItem(HISTORY_WARNING_DISMISSED_KEY)
+  } catch { /* Without storage the notice simply shows again on the next visit. */ }
+}
 export function importURLKey() {
   const url = new URL(location.href)
   if (!url.searchParams.has('key')) return
   const key = url.searchParams.get('key')?.trim()
   url.searchParams.delete('key')
   history.replaceState(history.state, '', url.pathname + url.search + url.hash)
-  if (key) writeStoredAPIKey(key, true)
+  if (key) {
+    writeStoredAPIKey(key, true)
+    // This runs before React mounts, so no studio:key-changed event can carry the
+    // change; clear the dismissal here instead so the warning re-arms for the new key.
+    writeHistoryWarningDismissed(false)
+  }
 }

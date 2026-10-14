@@ -377,6 +377,14 @@
       "settlementHint": "Updates automatically after usage settles. You can also refresh manually. Model request and rate limits still apply separately.",
       "imagePrice": "{{price}} / image · charged on success"
     },
+    "historyWarning": {
+      "badge": "Important",
+      "title": "History is tied to your API key",
+      "keyNotice": "History, the image gallery, and prompt templates all follow the current API key. After you switch API keys, records created under the old key can no longer be displayed — that is equivalent to losing them.",
+      "saveNotice": "Please save your important generated images from the studio in good time and download them for safekeeping. If history is lost, we cannot guarantee it can be recovered.",
+      "dismiss": "Hide for now",
+      "dismissHint": "You can still review this notice at any time in the API Key sign-in dialog. It also reappears when you sign in or switch the API key."
+    },
     "loginTitle": "Image Studio sign-in",
     "loginSubtitle": "Paste the API key issued by your admin to generate and edit images.",
     "rememberKey": "Remember this key",

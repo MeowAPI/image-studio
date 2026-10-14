@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next'
 import { api } from '../api'
 import { StudioArtwork } from '../components/image-studio/StudioArtwork'
 import { StudioCollectionHero, StudioCollectionSearch, StudioCollectionEmpty, StudioCollectionLoading, StudioCollectionPagination } from '../components/image-studio/StudioCollectionChrome'
+import StudioKeyHistoryNotice from '../components/image-studio/StudioKeyHistoryNotice'
 import { imageAssetOrientation, selectImageTemplates, selectImageAssets, selectImageJobs } from '../lib/imageStudioCollections'
 import type { ImageTemplateSort, ImageOrientation } from '../lib/imageStudioCollections'
 import './image-studio.css'
@@ -13,7 +14,7 @@ import './image-studio-collections.css'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { formatBeijingTime, formatRelativeTime } from '../utils/time'
-import { clearStoredAPIKey, readStoredAPIKey } from '../lib/studioKey'
+import { clearStoredAPIKey, readHistoryWarningDismissed, readStoredAPIKey, writeHistoryWarningDismissed } from '../lib/studioKey'
 import type { KeyRequest } from '../lib/requestKey'
 import type { CreateImageJobPayload, ImageAsset, ImageGenerationJob, ImagePromptTemplate, ImagePromptTemplatePayload } from '../types'
 import { Badge } from '@/components/ui/badge'
@@ -529,6 +530,7 @@ export default function ImageStudio() {
   const [currentJob, setCurrentJob] = useState<ImageGenerationJob | null>(null)
   const [loading, setLoading] = useState(true)
   const [hasAPIKey, setHasAPIKey] = useState(() => Boolean(readStoredAPIKey().key))
+  const [historyWarningDismissed, setHistoryWarningDismissed] = useState(() => readHistoryWarningDismissed())
   const [submitting, setSubmitting] = useState(false)
   const [templateSearch, setTemplateSearch] = useState('')
   const [selectedTag, setSelectedTag] = useState('')
@@ -562,9 +564,23 @@ export default function ImageStudio() {
   const inspirationIndexRef = useRef(0)
 
   useEffect(() => {
-    const onKeyChanged = () => setHasAPIKey(Boolean(readStoredAPIKey().key))
+    const onKeyChanged = () => {
+      const key = readStoredAPIKey().key
+      setHasAPIKey(Boolean(key))
+      // Re-arm only when a key is present: signing in (or importing ?key=) is when the
+      // previous key's history becomes unreachable. Signing out leaves no key at all, so
+      // it must not resurrect a notice the user already dismissed.
+      if (!key) return
+      writeHistoryWarningDismissed(false)
+      setHistoryWarningDismissed(false)
+    }
     window.addEventListener('studio:key-changed', onKeyChanged)
     return () => window.removeEventListener('studio:key-changed', onKeyChanged)
+  }, [])
+
+  const dismissHistoryWarning = useCallback(() => {
+    writeHistoryWarningDismissed(true)
+    setHistoryWarningDismissed(true)
   }, [])
 
   const openKeyDialog = () => {
@@ -1787,6 +1803,7 @@ export default function ImageStudio() {
         </div>
       </div>
       {confirmDialog}
+      {!historyWarningDismissed && <StudioKeyHistoryNotice onDismiss={dismissHistoryWarning} />}
 
       {activeView === 'studio' && (
         <>
