@@ -3971,6 +3971,7 @@ export interface ImageAsset {
 
 export interface ImageGenerationJob {
   id: number
+  user_id?: number
   status: 'queued' | 'running' | 'succeeded' | 'failed' | string
   prompt: string
   params_json: string

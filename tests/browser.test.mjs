@@ -1,37 +1,39 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createServer } from 'node:http'
-import { spawn, execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { chromium } from 'playwright'
-import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir } from 'node:fs/promises'
+import { newApiFixture, studioFixture, signIn, png } from './auth-fixture.mjs'
 
-const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS9sAAAAASUVORK5CYII='
-for (const mode of ['production', 'development']) test(`${mode}: studio layout, library, presets, Key, jobs and gallery`, async t => {
-  const requests = []
-  const upstream = createServer(async (req, res) => {
-    const chunks = []; for await (const chunk of req) chunks.push(chunk)
-    requests.push({ path: req.url, authorization: req.headers.authorization, body: Buffer.concat(chunks).toString() })
-    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({data:[{b64_json:png}]}))
-  })
-  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));t.after(()=>upstream.close())
-  const port = mode === 'production' ? 5190 : 5193
-  const app = spawn(process.execPath, ['server.mjs', ...(mode === 'development' ? ['--dev'] : [])], {env:{...process.env, HOST:'127.0.0.1',PORT:String(port),IMAGE_API_ENDPOINT:`http://127.0.0.1:${upstream.address().port}/v1/images/generations`},stdio:'pipe'})
-  t.after(()=>app.kill())
-  const origin=`http://127.0.0.1:${port}`
-  for(let n=0;;n++){try{if((await fetch(origin)).ok)break}catch{}if(n>80)throw new Error('Server unavailable');await delay(100)}
-  const browser=await chromium.launch({executablePath:process.env.CHROME_PATH||execFileSync('which',['google-chrome'],{encoding:'utf8'}).trim(),args:['--no-sandbox']});t.after(()=>browser.close())
+function chromePath() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH
+  const edge = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+  if (process.platform === 'win32' && existsSync(edge)) return edge
+  return execFileSync('which', ['google-chrome'], { encoding: 'utf8' }).trim()
+}
+for (const mode of ['production', 'development']) test(`${mode}: account login, user isolation, layout, library, jobs and gallery`, async t => {
+  const upstream = await newApiFixture(t)
+  const { requests } = upstream
+  const { origin } = await studioFixture(t, upstream, { dev: mode === 'development' })
+  const browser=await chromium.launch({executablePath:chromePath(),args:['--no-sandbox']});t.after(()=>browser.close())
   const context=await browser.newContext({viewport:{width:1440,height:1000},locale:'zh-CN',colorScheme:'light'})
   await context.addInitScript(() => { localStorage.setItem('lang', 'zh'); localStorage.setItem('theme', 'light'); localStorage.setItem('color-theme', 'default') })
   const page=await context.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message))
   await page.goto(origin+'/images/studio');await page.locator('.studio-composer').waitFor()
   assert.equal(await page.getByRole('button',{name:'登录',exact:true}).count(),1)
-  await page.getByRole('button',{name:'登录',exact:true}).click()
-  await page.getByRole('dialog').getByLabel('API Key',{exact:true}).fill('sk-header-test')
-  await page.getByRole('button',{name:'保存并继续',exact:true}).click()
-  await page.getByRole('button',{name:'退出登录',exact:true}).waitFor()
+  await page.locator('#image-studio-prompt').fill('授权前的草稿')
+  await signIn(page)
+  await page.getByText('账号 #1', { exact: true }).waitFor()
+  assert.equal(await page.locator('#image-studio-prompt').inputValue(), '授权前的草稿')
+  assert.equal(await page.evaluate(() => document.cookie.includes('image_studio_session')), false)
+  const firstKey = upstream.lastKey
   await page.getByRole('button',{name:'退出登录',exact:true}).click()
   await page.getByRole('button',{name:'登录',exact:true}).waitFor()
+  await signIn(page)
+  assert.notEqual(upstream.lastKey, firstKey)
+  const browserImageRequests = []
+  page.on('request', request => { if (request.url().includes('/api/images/')) browserImageRequests.push(request.headers()) })
   const desktopLayout = await page.evaluate(() => {
     const form = document.querySelector('.studio-form-scroll')
     const composer = document.querySelector('.studio-composer').getBoundingClientRect()
@@ -77,7 +79,7 @@ for (const mode of ['production', 'development']) test(`${mode}: studio layout, 
   assert.equal(await page.locator('#image-studio-prompt').inputValue(),'资料库里的测试提示词')
   assert.match(await page.getByRole('button',{name:'模型',exact:true}).innerText(),/gpt-image-2.5-flare/)
   assert.equal(await page.getByRole('button',{name:'电商主图',exact:true}).getAttribute('aria-pressed'),'true')
-  const savedTemplate = await page.evaluate(() => JSON.parse(localStorage.getItem('image_studio_templates'))[0])
+  const savedTemplate = await page.evaluate(() => JSON.parse(localStorage.getItem(Object.keys(localStorage).find(key => key.startsWith('image_studio_templates:'))))[0])
   await page.getByRole('button',{name:/高级参数/}).click()
   const advanced = page.locator('#studio-advanced-params')
   assert.equal(await advanced.getByRole('button',{name:'API Key',exact:true}).count(),0)
@@ -96,13 +98,13 @@ for (const mode of ['production', 'development']) test(`${mode}: studio layout, 
   await page.getByRole('option',{name:'放大到 2K',exact:true}).click()
   if (mode === 'production') await page.screenshot({path:'artifacts/advanced-params.png',fullPage:true,animations:'disabled'})
   await page.getByRole('button',{name:'生成图片',exact:true}).click()
-  await page.getByRole('dialog').getByLabel('API Key',{exact:true}).fill('sk-local-regression-only')
-  await page.getByRole('button',{name:'保存并继续',exact:true}).click()
   await page.locator('.studio-result-image img').waitFor({timeout:15000})
   assert.equal(requests.length,1)
   const body=JSON.parse(requests[0].body)
   assert.equal(body.model,'gpt-image-2.5-sunburst');assert.equal(body.size,'2560x1440');assert.equal(body.upscale,'2k');assert.equal(body.api_key_id,undefined);assert.match(body.prompt,/Clean commercial product photography/)
-  assert.equal(requests[0].authorization,'Bearer sk-local-regression-only')
+  assert.equal(requests[0].authorization,`Bearer ${upstream.lastKey}`)
+  assert.equal(browserImageRequests[0].authorization,undefined)
+  assert.equal(await page.evaluate(() => JSON.stringify(localStorage).includes('sk-studio-test')), false)
   const download = page.waitForEvent('download')
   await page.getByRole('button',{name:'下载',exact:true}).click()
   assert.equal(await (await download).failure(),null)
@@ -125,13 +127,29 @@ for (const mode of ['production', 'development']) test(`${mode}: studio layout, 
   assert.equal(new URL(page.url()).search,'?keep=yes')
   await page.getByRole('link',{name:'图库',exact:true}).click()
   await page.getByRole('heading',{name:'我的作品画廊',exact:true}).waitFor()
+  await page.locator('.studio-gallery-card').first().waitFor()
+  const galleryCount = await page.locator('.studio-gallery-card').count()
+  await page.getByRole('button',{name:'退出登录',exact:true}).click()
+  upstream.account = 2
+  await signIn(page)
+  await page.getByText('账号 #2', { exact: true }).waitFor()
+  await page.getByRole('heading',{name:'我的作品画廊',exact:true}).waitFor()
   assert.equal(await page.locator('.studio-gallery-card').count(),0)
+  await page.getByRole('link',{name:'提示词管理',exact:true}).click()
+  await page.getByRole('heading',{name:'提示词资料库',exact:true}).waitFor()
+  assert.equal(await page.locator('.studio-template-card').count(),0)
+  await page.getByRole('button',{name:'退出登录',exact:true}).click()
+  upstream.account = 1
+  await signIn(page)
+  await page.getByRole('link',{name:'图库',exact:true}).click()
+  await page.locator('.studio-gallery-card').first().waitFor()
+  assert.equal(await page.locator('.studio-gallery-card').count(),galleryCount)
   await page.getByRole('link',{name:'提示词管理',exact:true}).click()
   await card.waitFor()
   await card.getByRole('button',{name:'删除提示词模板',exact:true}).click()
   await page.getByRole('dialog').getByRole('button',{name:'删除',exact:true}).click()
   await card.waitFor({state:'hidden'})
-  await page.evaluate(template => localStorage.setItem('image_studio_templates',JSON.stringify([{...template, model:'gpt-image-2-4k',size:'auto',name:'旧版4K模板'}])),savedTemplate)
+  await page.evaluate(template => localStorage.setItem(Object.keys(localStorage).find(key => key.startsWith('image_studio_templates:')),JSON.stringify([{...template, model:'gpt-image-2-4k',size:'auto',name:'旧版4K模板'}])),savedTemplate)
   await page.reload()
   const legacy = page.locator('.studio-template-card').filter({hasText:'旧版4K模板'})
   await legacy.locator('.studio-template-footer button').first().click()
@@ -164,4 +182,50 @@ for (const mode of ['production', 'development']) test(`${mode}: studio layout, 
     if(mode === 'production') await page.screenshot({path:`artifacts/studio-${width}-${theme}.png`,fullPage:true,animations:'disabled'})
   }
   assert.deepEqual(errors,[])
+})
+
+test('remembered legacy history migrates only after the owning account authorizes', async t => {
+  const upstream = await newApiFixture(t)
+  const { origin } = await studioFixture(t, upstream)
+  const browser = await chromium.launch({ executablePath: chromePath(), args: ['--no-sandbox'] })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ locale: 'zh-CN' })
+  await page.goto(origin)
+  await page.evaluate(async png => {
+    localStorage.setItem('lang', 'zh')
+    localStorage.setItem('codex2api_image_studio_api_key', JSON.stringify({ key: 'sk-legacy-user-1', remember: true }))
+    localStorage.setItem('image_studio_templates', JSON.stringify([{ id: 123, name: '旧模板', prompt: 'legacy', tags: [], favorite: false, model: 'gpt-image-2', usage_count: 0 }]))
+    const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('sk-legacy-user-1'))
+    const owner = Array.from(new Uint8Array(bytes), value => value.toString(16).padStart(2, '0')).join('')
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open('image-studio-workbench', 1)
+      request.onupgradeneeded = () => request.result.createObjectStore('jobs', { keyPath: 'id' })
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('jobs', 'readwrite')
+      tx.objectStore('jobs').put({ id: 123456, owner, prompt: '旧作品', status: 'succeeded', params_json: '{}', created_at: new Date().toISOString(),
+        assets: [{ id: 123457, job_id: 123456, filename: 'old.png', mime_type: 'image/png', cache_b64_json: png, model: 'gpt-image-2', created_at: new Date().toISOString() }] })
+      tx.oncomplete = resolve; tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  }, png)
+  await page.reload()
+  upstream.account = 2
+  await signIn(page)
+  await page.getByRole('link', { name: '图库', exact: true }).click()
+  await page.getByRole('heading', { name: '我的作品画廊', exact: true }).waitFor()
+  assert.equal(await page.locator('.studio-gallery-card').count(), 0)
+  assert.ok(await page.evaluate(() => localStorage.getItem('codex2api_image_studio_api_key')))
+  await page.getByRole('button', { name: '退出登录', exact: true }).click()
+  upstream.account = 1
+  await signIn(page)
+  await page.locator('.studio-gallery-card').first().waitFor()
+  assert.equal(await page.evaluate(() => localStorage.getItem('codex2api_image_studio_api_key')), null)
+  await page.getByRole('link', { name: '提示词管理', exact: true }).click()
+  await page.locator('.studio-template-card').filter({ hasText: '旧模板' }).waitFor()
+  await page.reload()
+  await page.locator('.studio-template-card').filter({ hasText: '旧模板' }).waitFor()
+  assert.equal(await page.locator('.studio-template-card').count(), 1)
 })

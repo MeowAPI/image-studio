@@ -3,10 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { api } from '../api'
+import { api, legacyMigrationFailed } from '../api'
 import { StudioArtwork } from '../components/image-studio/StudioArtwork'
 import { StudioCollectionHero, StudioCollectionSearch, StudioCollectionEmpty, StudioCollectionLoading, StudioCollectionPagination } from '../components/image-studio/StudioCollectionChrome'
-import StudioKeyHistoryNotice from '../components/image-studio/StudioKeyHistoryNotice'
+import StudioAccountNotice from '../components/image-studio/StudioAccountNotice'
 import { imageAssetOrientation, selectImageTemplates, selectImageAssets, selectImageJobs } from '../lib/imageStudioCollections'
 import type { ImageTemplateSort, ImageOrientation } from '../lib/imageStudioCollections'
 import './image-studio.css'
@@ -14,8 +14,8 @@ import './image-studio-collections.css'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { formatBeijingTime, formatRelativeTime } from '../utils/time'
-import { clearStoredAPIKey, readHistoryWarningDismissed, readStoredAPIKey, writeHistoryWarningDismissed } from '../lib/studioKey'
-import type { KeyRequest } from '../lib/requestKey'
+import { dismissAccountNotice, readAccountNoticeDismissed } from '../lib/legacyHistory'
+import { logout as logoutAccount, readAuthError, readUser, requireUser } from '../lib/auth'
 import type { CreateImageJobPayload, ImageAsset, ImageGenerationJob, ImagePromptTemplate, ImagePromptTemplatePayload } from '../types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -107,6 +107,8 @@ type TemplateEditorDraft = {
   style: string
 }
 
+type StudioDraft = Partial<CreateImageJobPayload> & { imageToImageMode?: boolean }
+const LOGIN_DRAFT_KEY = 'image_studio_login_draft'
 
 const SIZE_OPTIONS = [
   { label: 'Auto', value: 'auto' },
@@ -393,7 +395,7 @@ function hasServerImageURL(asset: ImageAsset): boolean {
 }
 
 type CachedImageAsset = {
-  id: number
+  id: string
   blob: Blob
   mimeType: string
   bytes: number
@@ -426,7 +428,7 @@ async function readCachedImageAsset(id: number): Promise<Blob | null> {
   return new Promise(resolve => {
     const tx = db.transaction(IMAGE_ASSET_CACHE_STORE, 'readwrite')
     const store = tx.objectStore(IMAGE_ASSET_CACHE_STORE)
-    const request = store.get(id)
+    const request = store.get(`${readUser()?.owner}:${id}`)
     request.onsuccess = () => {
       const record = request.result as CachedImageAsset | undefined
       if (!record?.blob) {
@@ -451,7 +453,7 @@ async function writeCachedImageAsset(asset: ImageAsset, blob: Blob): Promise<voi
     const tx = db.transaction(IMAGE_ASSET_CACHE_STORE, 'readwrite')
     const store = tx.objectStore(IMAGE_ASSET_CACHE_STORE)
     const record: CachedImageAsset = {
-      id: asset.id,
+      id: `${readUser()?.owner}:${asset.id}`,
       blob,
       mimeType: blob.type || asset.mime_type || 'application/octet-stream',
       bytes: blob.size || asset.bytes || 0,
@@ -529,8 +531,8 @@ export default function ImageStudio() {
   const [previewAsset, setPreviewAsset] = useState<ImageAsset | null>(null)
   const [currentJob, setCurrentJob] = useState<ImageGenerationJob | null>(null)
   const [loading, setLoading] = useState(true)
-  const [hasAPIKey, setHasAPIKey] = useState(() => Boolean(readStoredAPIKey().key))
-  const [historyWarningDismissed, setHistoryWarningDismissed] = useState(() => readHistoryWarningDismissed())
+  const user = readUser()
+  const [historyWarningDismissed, setHistoryWarningDismissed] = useState(() => readAccountNoticeDismissed(user?.owner || 'guest'))
   const [submitting, setSubmitting] = useState(false)
   const [templateSearch, setTemplateSearch] = useState('')
   const [selectedTag, setSelectedTag] = useState('')
@@ -541,19 +543,22 @@ export default function ImageStudio() {
   const [templateDialogDraft, setTemplateDialogDraft] = useState<TemplateEditorDraft>(() => emptyTemplateDraft())
   const [templateDialogSaving, setTemplateDialogSaving] = useState(false)
 
-  const [prompt, setPrompt] = useState('')
-  const [model, setModel] = useState('gpt-image-2')
-  const [size, setSize] = useState('auto')
-  const [quality, setQuality] = useState('auto')
+  const [loginDraft] = useState<StudioDraft>(() => {
+    try { return JSON.parse(sessionStorage.getItem(LOGIN_DRAFT_KEY) || '{}') || {} } catch { return {} }
+  })
+  const [prompt, setPrompt] = useState(loginDraft.prompt || '')
+  const [model, setModel] = useState(loginDraft.model || 'gpt-image-2')
+  const [size, setSize] = useState(loginDraft.size || 'auto')
+  const [quality, setQuality] = useState(loginDraft.quality || 'auto')
   useEffect(() => { setQuality(current => normalizeImageQualityForModel(current, model)) }, [model])
-  const [outputFormat, setOutputFormat] = useState('png')
-  const [background, setBackground] = useState('auto')
-  const [upscale, setUpscale] = useState('none')
-  const [style, setStyle] = useState('')
+  const [outputFormat, setOutputFormat] = useState(loginDraft.output_format || 'png')
+  const [background, setBackground] = useState(loginDraft.background || 'auto')
+  const [upscale, setUpscale] = useState(loginDraft.upscale || 'none')
+  const [style, setStyle] = useState(loginDraft.style || '')
   const [templateName, setTemplateName] = useState('')
   const [templateTags, setTemplateTags] = useState('')
-  const [imageToImageMode, setImageToImageMode] = useState(false)
-  const [inputImageDataURLs, setInputImageDataURLs] = useState<string[]>([])
+  const [imageToImageMode, setImageToImageMode] = useState(loginDraft.imageToImageMode || false)
+  const [inputImageDataURLs, setInputImageDataURLs] = useState<string[]>(loginDraft.input_images || [])
   const inputImageDataURLsRef = useRef(inputImageDataURLs)
   inputImageDataURLsRef.current = inputImageDataURLs
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -564,35 +569,38 @@ export default function ImageStudio() {
   const inspirationIndexRef = useRef(0)
 
   useEffect(() => {
-    const onKeyChanged = () => {
-      const key = readStoredAPIKey().key
-      setHasAPIKey(Boolean(key))
-      // Re-arm only when a key is present: signing in (or importing ?key=) is when the
-      // previous key's history becomes unreachable. Signing out leaves no key at all, so
-      // it must not resurrect a notice the user already dismissed.
-      if (!key) return
-      writeHistoryWarningDismissed(false)
-      setHistoryWarningDismissed(false)
-    }
-    window.addEventListener('studio:key-changed', onKeyChanged)
-    return () => window.removeEventListener('studio:key-changed', onKeyChanged)
+    try { sessionStorage.removeItem(LOGIN_DRAFT_KEY) } catch { /* Storage may be disabled. */ }
   }, [])
 
+  useEffect(() => {
+    const beforeLogin = (event: Event) => {
+      try {
+        sessionStorage.setItem(LOGIN_DRAFT_KEY, JSON.stringify({
+          prompt, model, size, quality, output_format: outputFormat, background, upscale, style,
+          imageToImageMode, input_images: inputImageDataURLs,
+        }))
+      } catch { event.preventDefault(); showToast(t('imageStudioPortal.draftSaveFailed'), 'warning') }
+    }
+    window.addEventListener('studio:before-login', beforeLogin)
+    return () => window.removeEventListener('studio:before-login', beforeLogin)
+  }, [prompt, model, size, quality, outputFormat, background, upscale, style, imageToImageMode, inputImageDataURLs, showToast, t])
+
+  useEffect(() => {
+    const error = readAuthError()
+    if (error) showToast(t(error), 'error')
+    else if (legacyMigrationFailed()) showToast(t('imageStudioPortal.migrationFailed'), 'warning')
+  }, [showToast, t])
+
   const dismissHistoryWarning = useCallback(() => {
-    writeHistoryWarningDismissed(true)
+    dismissAccountNotice(readUser()?.owner || 'guest')
     setHistoryWarningDismissed(true)
   }, [])
 
-  const openKeyDialog = () => {
-    const detail: KeyRequest = { resolve: () => setHasAPIKey(true), reject: () => undefined }
-    window.dispatchEvent(new CustomEvent<KeyRequest>('studio:request-key', { detail }))
-  }
+  const openLoginDialog = () => { void requireUser().catch(() => {}) }
 
   const logout = () => {
-    clearStoredAPIKey()
-    setHasAPIKey(false)
-    window.dispatchEvent(new Event('studio:key-changed'))
-    showToast(t('imageStudioPortal.loggedOut'), 'success')
+    void logoutAccount().then(() => showToast(t('imageStudioPortal.loggedOut'), 'success'))
+      .catch(() => showToast(t('imageStudioPortal.logoutFailed'), 'error'))
   }
 
   useEffect(() => {
@@ -1795,15 +1803,15 @@ export default function ImageStudio() {
         <div className="studio-brand"><span><Sparkles aria-hidden="true" /></span><strong>Image Studio</strong></div>
         <ImageStudioTabs activeView={activeView} />
         <div className="studio-auth-actions">
-          {hasAPIKey ? (
-            <Button size="sm" variant="ghost" onClick={logout}><LogOut className="size-3.5" />{t('imageStudioPortal.logout')}</Button>
+          {user ? (
+            <><span className="text-xs text-muted-foreground" title={user.issuer}>{t('imageStudioPortal.account', { id: user.id })}</span><Button size="sm" variant="ghost" onClick={logout}><LogOut className="size-3.5" />{t('imageStudioPortal.logout')}</Button></>
           ) : (
-            <Button size="sm" variant="outline" onClick={openKeyDialog}><LogIn className="size-3.5" />{t('imageStudioPortal.loginAction')}</Button>
+            <Button size="sm" variant="outline" onClick={openLoginDialog}><LogIn className="size-3.5" />{t('imageStudioPortal.loginAction')}</Button>
           )}
         </div>
       </div>
       {confirmDialog}
-      {!historyWarningDismissed && <StudioKeyHistoryNotice onDismiss={dismissHistoryWarning} />}
+      {!historyWarningDismissed && <StudioAccountNotice onDismiss={dismissHistoryWarning} />}
 
       {activeView === 'studio' && (
         <>
@@ -2480,7 +2488,7 @@ function HistoryJobCard({ job, imageURLs, onSelect, onPreview, onDownload, onCop
         <div className="studio-history-details-body">
           <dl className="studio-history-details-meta">
             <HistoryMeta label={t('images.createdAt')} value={formatBeijingTime(job.created_at)} />
-            <HistoryMeta label={t('images.apiKey')} value={job.api_key_name || job.api_key_masked || '—'} />
+            <HistoryMeta label={t('imageStudioPortal.accountLabel')} value={job.user_id ? `#${job.user_id}` : '—'} />
             <HistoryMeta label={t('images.model')} value={jobModel(job)} />
             <HistoryMeta label={t('images.size')} value={jobRequestedSize(job)} />
             <HistoryMeta label={t('images.quality')} value={params.quality || 'auto'} />

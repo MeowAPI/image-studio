@@ -11,6 +11,8 @@ services:
       PORT: 3000
       IMAGE_API_ENDPOINT: ${IMAGE_API_ENDPOINT:?IMAGE_API_ENDPOINT is required}
       IMAGE_EDIT_ENDPOINT: ${IMAGE_EDIT_ENDPOINT:-}
+      NEW_API_BASE_URL: ${NEW_API_BASE_URL:-https://www.kurumiai.net}
+      IMAGE_STUDIO_ORIGIN: ${IMAGE_STUDIO_ORIGIN:?IMAGE_STUDIO_ORIGIN is required}
       IMAGE_DATA_DIR: /data
       SITE_NAME: ${SITE_NAME:-Image Studio}
       SITE_LOGO: ${SITE_LOGO:-}

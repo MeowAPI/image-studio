@@ -19,6 +19,7 @@ WORKDIR /app
 
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/server.mjs ./server.mjs
+COPY --from=build /app/auth.mjs ./auth.mjs
 COPY --from=build /app/dist ./dist
 
 RUN addgroup -S app && adduser -S app -G app \
